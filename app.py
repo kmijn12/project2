@@ -18,14 +18,14 @@ def load_excel_data(file_bytes):
     return raw_df, sections_df, busbar_df
 
 # ==========================================
-# [신규] 텍스트에서 두께(숫자)만 추출하는 함수
+# [신규] 텍스트에서 두께(숫자/소수점)만 추출하는 함수
 # ==========================================
 def extract_thickness(text):
-    # "8t 더블", "10" 등에서 숫자만 쏙 빼옵니다.
-    numbers = re.findall(r'\d+', text)
+    # 소수점을 포함한 숫자 추출 (예: "10.5t 더블" -> 10.5)
+    numbers = re.findall(r'\d+(?:\.\d+)?', text)
     if numbers:
-        return int(numbers[0])
-    return 999 # 숫자를 못 찾으면 제한을 두지 않음
+        return float(numbers[0])
+    return 999.0 # 숫자를 못 찾으면 제한을 두지 않음
 
 # ==========================================
 # [업데이트] 싱글/더블 분리 및 두께 제한 적용 서칭
@@ -126,9 +126,8 @@ st.sidebar.download_button(
 # ==========================================
 # 3. 배치 컨트롤러 및 그리드 UI
 # ==========================================
-# [신규] 화면 상단에 메인 부스바 정보 입력칸 추가
 st.markdown("### ⚙️ 패널 환경 설정")
-main_busbar_input = st.text_input("메인 부스바 정보 기입 (예: 8t 더블, 10t 등)", value="10t")
+main_busbar_input = st.text_input("메인 부스바 정보 기입 (예: 8t 더블, 10.5t 등)", value="10t")
 st.divider()
 
 col_control, col_grid = st.columns([1, 1.5], gap="large")
@@ -153,11 +152,25 @@ with col_control:
         )
         update_btn = st.form_submit_button("🔄 배치 업데이트 및 계산 실행", type="primary")
         
+    # [수정됨] 충돌 검증 및 안전한 덮어쓰기 로직
     if update_btn:
-        st.session_state.layout_mapping["Section"] = edited_mapping["Section"]
-        st.session_state.layout_mapping["Row"] = edited_mapping["Row"]
-        st.session_state.layout_mapping["Col"] = edited_mapping["Col"]
-        st.rerun() 
+        assigned_data = edited_mapping[edited_mapping["Section"] != "미지정"]
+        duplicates = assigned_data[assigned_data.duplicated(subset=['Section', 'Row', 'Col'], keep=False)]
+        
+        if not duplicates.empty:
+            st.error("🚨 **[충돌 발생]** 동일한 위치에 두 개 이상의 회로가 지정되었습니다. 수정 후 다시 시도해주세요.")
+            dup_grouped = duplicates.groupby(['Section', 'Row', 'Col'])['circuit_no'].apply(list).reset_index()
+            
+            for _, row in dup_grouped.iterrows():
+                st.warning(f"📍 **{row['Section']}** (행: {row['Row']}, 열: {row['Col']}) ➔ 중복 회로: {', '.join(row['circuit_no'])}")
+        else:
+            curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
+            new_mapping = edited_mapping[['circuit_no', 'Section', 'Row', 'Col']].set_index('circuit_no')
+            
+            curr_mapping.update(new_mapping)
+            st.session_state.layout_mapping = curr_mapping.reset_index()
+            
+            st.rerun()
 
 with col_grid:
     current_view = pd.merge(st.session_state.raw_data, st.session_state.layout_mapping, on="circuit_no")
@@ -193,7 +206,6 @@ with col_grid:
             st.divider()
             st.metric("Total Load", f"{total_current}A")
             
-            # [업데이트] 입력된 메인바 정보를 파라미터로 넘겨서 추천 결과 생성
             recommended_text = get_recommended_busbars(total_current, st.session_state.busbar_spec, main_busbar_input)
             st.info(f"**추천 분기 부스바 (메인 이하):**\n\n{recommended_text}")
             

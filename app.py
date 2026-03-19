@@ -3,7 +3,7 @@ import pandas as pd
 import re
 
 st.set_page_config(layout="wide")
-st.title("⚡ 분전반 배치 및 리비전 관리기 (고급 부스바 선정 버전)")
+st.title("⚡ 분전반 배치 및 리비전 관리기 (파이프라인 연동용 합본 추출 버전)")
 
 @st.cache_data
 def load_excel_data(file_bytes):
@@ -18,7 +18,7 @@ def load_excel_data(file_bytes):
     return raw_df, sections_df, busbar_df
 
 # ==========================================
-# [신규] 텍스트에서 두께(숫자/소수점)만 추출하는 함수
+# 텍스트에서 두께(숫자/소수점)만 추출하는 함수
 # ==========================================
 def extract_thickness(text):
     # 소수점을 포함한 숫자 추출 (예: "10.5t 더블" -> 10.5)
@@ -28,7 +28,7 @@ def extract_thickness(text):
     return 999.0 # 숫자를 못 찾으면 제한을 두지 않음
 
 # ==========================================
-# [업데이트] 싱글/더블 분리 및 두께 제한 적용 서칭
+# 싱글/더블 분리 및 두께 제한 적용 서칭
 # ==========================================
 def get_recommended_busbars(total_amp, busbar_df, main_bar_text):
     if busbar_df.empty or 'Thickness' not in busbar_df.columns:
@@ -105,10 +105,11 @@ if layout_file is not None:
     if 'last_layout_file' not in st.session_state or st.session_state.last_layout_file != layout_file.name:
         try:
             restored_df = pd.read_csv(layout_file)
-            # 여기(복원 로직)에도 이미 인덱스 기반 업데이트가 적용되어 있습니다.
             curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
             rest_mapping = restored_df.set_index('circuit_no')
-            curr_mapping.update(rest_mapping)
+            
+            # 합본 CSV가 들어와도, curr_mapping에 존재하는 Section, Row, Col만 덮어씀 (안전함)
+            curr_mapping.update(rest_mapping) 
             
             st.session_state.layout_mapping = curr_mapping.reset_index()
             st.session_state.last_layout_file = layout_file.name
@@ -116,12 +117,18 @@ if layout_file is not None:
         except Exception as e:
             st.sidebar.error(f"복원 파일 형식이 맞지 않습니다: {e}")
 
-csv_export = st.session_state.layout_mapping.to_csv(index=False).encode('utf-8-sig')
+# ==============================================================
+# [핵심 변경 사항] 방식 2: Raw 데이터와 매핑 데이터를 병합하여 CSV 추출
+# ==============================================================
+export_df = pd.merge(st.session_state.raw_data, st.session_state.layout_mapping, on="circuit_no")
+csv_export = export_df.to_csv(index=False).encode('utf-8-sig')
+
 st.sidebar.download_button(
-    label="💾 현재 배치 결과 저장 (CSV)",
+    label="💾 데이터 전체 병합본 저장 (CSV)",
     data=csv_export,
-    file_name="Panel_Layout_Rev.csv",
+    file_name="Panel_Layout_Export_Merged.csv", # 파일명도 합본임을 명시적으로 변경
     mime="text/csv",
+    help="Raw 데이터(회로정보)와 현재 배치정보(Row, Col)가 모두 합쳐진 상태로 저장됩니다. 다른 프로그램 연동 시 이 파일 하나만 있으면 됩니다."
 )
 
 # ==========================================
@@ -153,9 +160,6 @@ with col_control:
         )
         update_btn = st.form_submit_button("🔄 배치 업데이트 및 계산 실행", type="primary")
         
-    # ==============================================================
-    # [핵심 변경 사항] 충돌 검증 및 이름표(Index) 기반 안전한 업데이트 로직
-    # ==============================================================
     if update_btn:
         assigned_data = edited_mapping[edited_mapping["Section"] != "미지정"]
         duplicates = assigned_data[assigned_data.duplicated(subset=['Section', 'Row', 'Col'], keep=False)]
@@ -167,16 +171,10 @@ with col_control:
             for _, row in dup_grouped.iterrows():
                 st.warning(f"📍 **{row['Section']}** (행: {row['Row']}, 열: {row['Col']}) ➔ 중복 회로: {', '.join(row['circuit_no'])}")
         else:
-            # 1. 'circuit_no'를 고유 이름표(Index)로 설정합니다.
             curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
             new_mapping = edited_mapping[['circuit_no', 'Section', 'Row', 'Col']].set_index('circuit_no')
-            
-            # 2. 순서와 무관하게 같은 이름표를 가진 행끼리만 안전하게 덮어씁니다.
             curr_mapping.update(new_mapping)
-            
-            # 3. 업데이트가 끝난 후 인덱스를 다시 원래대로 돌려놓습니다.
             st.session_state.layout_mapping = curr_mapping.reset_index()
-            
             st.rerun()
 
 with col_grid:

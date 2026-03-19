@@ -105,6 +105,7 @@ if layout_file is not None:
     if 'last_layout_file' not in st.session_state or st.session_state.last_layout_file != layout_file.name:
         try:
             restored_df = pd.read_csv(layout_file)
+            # 여기(복원 로직)에도 이미 인덱스 기반 업데이트가 적용되어 있습니다.
             curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
             rest_mapping = restored_df.set_index('circuit_no')
             curr_mapping.update(rest_mapping)
@@ -152,7 +153,9 @@ with col_control:
         )
         update_btn = st.form_submit_button("🔄 배치 업데이트 및 계산 실행", type="primary")
         
-    # [수정됨] 충돌 검증 및 안전한 덮어쓰기 로직
+    # ==============================================================
+    # [핵심 변경 사항] 충돌 검증 및 이름표(Index) 기반 안전한 업데이트 로직
+    # ==============================================================
     if update_btn:
         assigned_data = edited_mapping[edited_mapping["Section"] != "미지정"]
         duplicates = assigned_data[assigned_data.duplicated(subset=['Section', 'Row', 'Col'], keep=False)]
@@ -164,10 +167,14 @@ with col_control:
             for _, row in dup_grouped.iterrows():
                 st.warning(f"📍 **{row['Section']}** (행: {row['Row']}, 열: {row['Col']}) ➔ 중복 회로: {', '.join(row['circuit_no'])}")
         else:
+            # 1. 'circuit_no'를 고유 이름표(Index)로 설정합니다.
             curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
             new_mapping = edited_mapping[['circuit_no', 'Section', 'Row', 'Col']].set_index('circuit_no')
             
+            # 2. 순서와 무관하게 같은 이름표를 가진 행끼리만 안전하게 덮어씁니다.
             curr_mapping.update(new_mapping)
+            
+            # 3. 업데이트가 끝난 후 인덱스를 다시 원래대로 돌려놓습니다.
             st.session_state.layout_mapping = curr_mapping.reset_index()
             
             st.rerun()

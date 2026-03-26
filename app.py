@@ -83,7 +83,7 @@ if uploaded_file is not None:
         
         if 'last_file' not in st.session_state or st.session_state.last_file != uploaded_file.name:
             st.session_state.layout_mapping = pd.DataFrame({
-                "circuit_no": raw_df["circuit_no"],
+                "circuit_no": raw_df["circuit_no"].astype(str), # 초기화 시 문자열 강제
                 "Section": ["미지정"] * len(raw_df),
                 "Row": [1] * len(raw_df),
                 "Col": [1] * len(raw_df)
@@ -98,35 +98,62 @@ else:
     st.info("👈 왼쪽 사이드바에서 설계 Raw Data(엑셀)를 먼저 업로드해주세요.")
     st.stop()
 
+# ==========================================
+# 2. 리비전(Rev) 복원 및 백업 (좌표 전용 추출 적용)
+# ==========================================
 st.sidebar.divider()
 st.sidebar.header("🔄 2. 리비전(Rev) 복원 및 백업")
 layout_file = st.sidebar.file_uploader("📂 과거 배치 내역 복원 (CSV)", type=["csv"])
+
 if layout_file is not None:
     if 'last_layout_file' not in st.session_state or st.session_state.last_layout_file != layout_file.name:
         try:
             restored_df = pd.read_csv(layout_file)
-            curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
-            rest_mapping = restored_df.set_index('circuit_no')
             
-            # 합본 CSV가 들어와도, curr_mapping에 존재하는 Section, Row, Col만 덮어씀 (안전함)
-            curr_mapping.update(rest_mapping) 
+            # 1. 인덱스 매칭을 위해 circuit_no를 강제 문자열 변환
+            restored_df['circuit_no'] = restored_df['circuit_no'].astype(str)
+            st.session_state.layout_mapping['circuit_no'] = st.session_state.layout_mapping['circuit_no'].astype(str)
             
-            st.session_state.layout_mapping = curr_mapping.reset_index()
-            st.session_state.last_layout_file = layout_file.name
-            st.rerun() 
+            # 2. 타 프로그램 연동용 로우 데이터는 무시하고, 오직 '좌표'만 추출
+            coord_cols = ['circuit_no', 'Section', 'Row', 'Col']
+            
+            if set(coord_cols).issubset(restored_df.columns):
+                # 백업본에서 좌표만 발췌하여 인덱스 설정
+                coords_only_df = restored_df[coord_cols].set_index('circuit_no')
+                
+                # 현재 세션의 매핑 데이터 (새로운 Raw Data가 올라왔더라도 대응 가능)
+                curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
+                
+                # 3. 현재 매핑의 회로번호와 일치하는 곳에만 '좌표' 업데이트 (로우 데이터 보존)
+                curr_mapping.update(coords_only_df)
+                
+                # st.data_editor 충돌 방지를 위해 빈칸/소수점 정리
+                curr_mapping['Row'] = curr_mapping['Row'].fillna(1).astype(int)
+                curr_mapping['Col'] = curr_mapping['Col'].fillna(1).astype(int)
+                
+                st.session_state.layout_mapping = curr_mapping.reset_index()
+                st.session_state.last_layout_file = layout_file.name
+                
+                st.sidebar.success("✅ 로우 데이터를 제외하고 '배치 좌표'만 성공적으로 이식했습니다.")
+                st.rerun() 
+            else:
+                st.sidebar.error("🚨 백업 파일에 필수 좌표 컬럼(circuit_no, Section, Row, Col)이 없습니다.")
+                
         except Exception as e:
-            st.sidebar.error(f"복원 파일 형식이 맞지 않습니다: {e}")
+            st.sidebar.error(f"복원 중 데이터 형식이 맞지 않습니다: {e}")
 
 # ==============================================================
-# [핵심 변경 사항] 방식 2: Raw 데이터와 매핑 데이터를 병합하여 CSV 추출
+# 방식 2: Raw 데이터와 매핑 데이터를 병합하여 CSV 추출 (파이프라인용)
 # ==============================================================
+# 저장할 때도 circuit_no 기준 타입을 맞춰 병합
+st.session_state.raw_data['circuit_no'] = st.session_state.raw_data['circuit_no'].astype(str)
 export_df = pd.merge(st.session_state.raw_data, st.session_state.layout_mapping, on="circuit_no")
 csv_export = export_df.to_csv(index=False).encode('utf-8-sig')
 
 st.sidebar.download_button(
     label="💾 데이터 전체 병합본 저장 (CSV)",
     data=csv_export,
-    file_name="Panel_Layout_Export_Merged.csv", # 파일명도 합본임을 명시적으로 변경
+    file_name="Panel_Layout_Export_Merged.csv", 
     mime="text/csv",
     help="Raw 데이터(회로정보)와 현재 배치정보(Row, Col)가 모두 합쳐진 상태로 저장됩니다. 다른 프로그램 연동 시 이 파일 하나만 있으면 됩니다."
 )
@@ -174,6 +201,11 @@ with col_control:
             curr_mapping = st.session_state.layout_mapping.set_index('circuit_no')
             new_mapping = edited_mapping[['circuit_no', 'Section', 'Row', 'Col']].set_index('circuit_no')
             curr_mapping.update(new_mapping)
+            
+            # 업데이트 후에도 int형 유지 방어코드
+            curr_mapping['Row'] = curr_mapping['Row'].fillna(1).astype(int)
+            curr_mapping['Col'] = curr_mapping['Col'].fillna(1).astype(int)
+            
             st.session_state.layout_mapping = curr_mapping.reset_index()
             st.rerun()
 
